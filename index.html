@@ -11,8 +11,8 @@
 <body class="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4">
 
     <div class="max-w-md w-full bg-gray-800 rounded-xl p-6 shadow-2xl border border-gray-700 text-center">
-        <h1 class="text-2xl font-bold mb-2 text-indigo-400">QR P2P Screen Share</h1>
-        <p class="text-xs text-gray-500 mb-6">画面＋PC内音声 配信モード</p>
+        <h1 class="text-2xl font-bold mb-1 text-indigo-400">QR P2P Screen Share</h1>
+        <p class="text-xs text-gray-500 mb-6">画面＋PC内音声 配信システム</p>
         
         <div id="host-ui" class="hidden space-y-6">
             <p class="text-sm text-gray-400">① 先に画面共有を開始し、② スマホでQRコードを読み取ってください。</p>
@@ -28,17 +28,22 @@
                 <div id="qrcode" class="bg-white p-4 rounded-lg inline-block shadow-md"></div>
             </div>
 
-            <p id="host-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-2 rounded border border-gray-700 text-left overflow-x-auto">PeerJS 接続準備中...</p>
+            <div id="host-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-3 rounded border border-gray-700 text-left whitespace-pre-wrap">PeerJS 接続準備中...</div>
+            
             <video id="host-video" autoplay playsinline muted class="w-full rounded-lg border border-gray-700 bg-black mt-4 hidden"></video>
         </div>
 
         <div id="viewer-ui" class="hidden space-y-4">
             <p class="text-sm text-gray-400">PCの画面・音声を受信中...</p>
-            <p id="viewer-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-2 rounded border border-gray-700 text-left">配信者に接続を要求中...</p>
-            <div class="relative w-full aspect-video bg-black rounded-lg overflow-hidden border border-gray-700 shadow-inner">
-                <video id="viewer-video" autoplay playsinline controls class="w-full h-full object-contain"></video>
+            <div id="viewer-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-2 rounded border border-gray-700 text-left">配信者に接続を要求中...</div>
+            
+            <div class="relative w-full aspect-video bg-black rounded-lg overflow-hidden border border-gray-700 shadow-inner cursor-pointer" id="video-container">
+                <video id="viewer-video" autoplay playsinline class="w-full h-full object-contain"></video>
+                <div id="tap-notice" class="absolute inset-0 bg-black/70 flex items-center justify-center text-sm text-center p-4 hidden">
+                    🎵 タップして音声を有効にする
+                </div>
             </div>
-            <p class="text-xs text-gray-500">※音が聞こえない場合は、上の動画プレイヤーの消音（ミュート）を解除するか、画面をタップしてください。</p>
+            <p class="text-xs text-gray-500">※音が聞こえない場合は、上の画面をタップするか、スマホのマナーモードを解除してください。</p>
         </div>
     </div>
 
@@ -53,6 +58,8 @@
         const startShareBtn = document.getElementById('start-share-btn');
         const hostVideo = document.getElementById('host-video');
         const viewerVideo = document.getElementById('viewer-video');
+        const videoContainer = document.getElementById('video-container');
+        const tapNotice = document.getElementById('tap-notice');
 
         let peer = null;
         let localStream = null;
@@ -67,11 +74,9 @@
             peer = new Peer();
 
             peer.on('open', (id) => {
-                hostStatus.innerText = `[ステータス] サーバー接続完了。\nあなたのID: ${id}`;
-                hostStatus.classList.replace('text-yellow-500', 'text-green-400');
+                updateHostStatus(`[接続完了] サーバーに繋がりました。\nあなたの部屋ID: ${id}`, 'text-green-400');
 
                 const shareUrl = `${window.location.origin}${window.location.pathname}?room=${id}`;
-                
                 document.getElementById('qrcode').innerHTML = ""; 
                 new QRCode(document.getElementById('qrcode'), {
                     text: shareUrl,
@@ -82,7 +87,7 @@
 
             startShareBtn.addEventListener('click', async () => {
                 try {
-                    // ★ audio: true にしてPC内部の音声も取得するように変更
+                    // 画面共有と音声の取得を要求
                     localStream = await navigator.mediaDevices.getDisplayMedia({
                         video: { cursor: "always" },
                         audio: true 
@@ -94,34 +99,48 @@
                     startShareBtn.disabled = true;
                     startShareBtn.classList.add('bg-gray-600', 'cursor-not-allowed');
 
+                    // 🚨 【音声チェックロジック】
+                    const audioTracks = localStream.getAudioTracks();
+                    if (audioTracks.length === 0) {
+                        // 音声が取れていない場合、画面を赤くしてアラートを出す
+                        const errMsg = "❌【音声が送信されていません！】\n\n原因の可能性:\n① 画面共有時のポップアップ左下にある「システムの音声を共有」にチェックを入れていない。\n② Macをご利用の場合、「画面全体」を選ぶと構造上音が取れません。「Chromeのタブ」を選んで配信してください。";
+                        updateHostStatus(errMsg, 'text-red-400 font-bold bg-red-950/50 border-red-500');
+                        alert("⚠️ 音声が共有されていません！\n\n画面共有のポップアップで「音声を共有」にチェックを入れるか、Macの場合は「タブ」を選択してやり直してください。");
+                    } else {
+                        updateHostStatus(`✅ 画面 ＋ 音声の取得に成功！\n現在 ${connectedViewers.length} 台の端末に配信中。`, 'text-green-400');
+                    }
+
+                    // すでに待機しているスマホがあれば即送信
                     if (connectedViewers.length > 0) {
                         connectedViewers.forEach(viewerId => {
                             peer.call(viewerId, localStream);
                         });
-                        hostStatus.innerText = `${connectedViewers.length}台の端末に画面と音声を送信中！`;
                     }
                 } catch (err) {
                     console.error("配信の取得失敗:", err);
-                    alert("画面共有の開始に失敗しました。共有設定時に『システムの音声を共有』にチェックを入れてみてください。");
+                    alert("画面共有の開始に失敗しました。ページを再読み込みしてください。");
                 }
             });
 
             peer.on('connection', (conn) => {
                 if (localStream) {
                     peer.call(conn.peer, localStream);
-                    hostStatus.innerText = `新しくスマホが接続されました。映像・音声送信中。`;
+                    const audioTracks = localStream.getAudioTracks();
+                    if(audioTracks.length > 0) {
+                        updateHostStatus(`スマホが接続されました。映像・音声送信中！`, 'text-green-400');
+                    }
                 } else {
                     if (!connectedViewers.includes(conn.peer)) {
                         connectedViewers.push(conn.peer);
                     }
-                    hostStatus.innerText = `スマホが接続して待機中。\n「画面と音声を共有開始」を押してください。`;
+                    updateHostStatus(`スマホが接続して待機中。\nPC側で「① 画面と音声を共有開始」を押してください。`, 'text-yellow-500');
                 }
             });
 
-            peer.on('error', (err) => {
-                hostStatus.innerText = `エラー: ${err.type}`;
-                hostStatus.classList.replace('text-yellow-500', 'text-red-400');
-            });
+            function updateHostStatus(text, colorClass) {
+                hostStatus.innerText = text;
+                hostStatus.className = `text-xs font-mono bg-gray-900 p-3 rounded border border-gray-700 text-left whitespace-pre-wrap ${colorClass}`;
+            }
 
         } else {
             // ==========================================
@@ -136,23 +155,39 @@
                 const conn = peer.connect(targetRoomId);
                 
                 conn.on('open', () => {
-                    viewerStatus.innerText = `PCと接続確立。配信を待っています...`;
+                    viewerStatus.innerText = `PCと接続確立。配信（画面共有）が始まるのを待っています...`;
                 });
             });
 
             peer.on('call', (call) => {
-                viewerStatus.innerText = `受信中！`;
+                viewerStatus.innerText = `受信中！画面をタップすると音が出ます。`;
                 viewerStatus.classList.replace('text-yellow-500', 'text-green-400');
                 
                 call.answer();
                 
                 call.on('stream', (remoteStream) => {
                     viewerVideo.srcObject = remoteStream;
+                    
+                    // スマホブラウザの「勝手に音を出してはいけないルール」対策
+                    viewerVideo.muted = true; 
+                    viewerVideo.play().then(() => {
+                        // 再生が始まったら「タップしてね」の案内を出す
+                        tapNotice.classList.remove('hidden');
+                    });
                 });
             });
 
+            // スマホ画面がタップされたらミュートを解除する
+            videoContainer.addEventListener('click', () => {
+                if (viewerVideo.srcObject) {
+                    viewerVideo.muted = false;
+                    tapNotice.classList.add('hidden');
+                    viewerStatus.innerText = `受信中！（音声有効化済み）`;
+                }
+            });
+
             peer.on('error', (err) => {
-                viewerStatus.innerText = `エラー。QRを読み直すかPC側を確認してください。`;
+                viewerStatus.innerText = `エラーが発生しました。QRコードを読み直してください。`;
                 viewerStatus.classList.replace('text-yellow-500', 'text-red-400');
             });
         }
