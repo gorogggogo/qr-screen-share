@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR P2P Screen & Audio Share</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="max-w-md w-full bg-gray-800 rounded-xl p-6 shadow-2xl border border-gray-700 text-center">
+        <h1 class="text-2xl font-bold mb-2 text-indigo-400">QR P2P Screen Share</h1>
+        <p class="text-xs text-gray-500 mb-6">画面＋PC内音声 配信モード</p>
+        
+        <div id="host-ui" class="hidden space-y-6">
+            <p class="text-sm text-gray-400">① 先に画面共有を開始し、② スマホでQRコードを読み取ってください。</p>
+            
+            <div>
+                <button id="start-share-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-6 rounded-lg transition duration-200 shadow-lg cursor-pointer">
+                    ① 画面と音声を共有開始
+                </button>
+            </div>
+
+            <div class="flex flex-col items-center justify-center space-y-2">
+                <p class="text-xs text-gray-400">② 視聴用QRコード</p>
+                <div id="qrcode" class="bg-white p-4 rounded-lg inline-block shadow-md"></div>
+            </div>
+
+            <p id="host-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-2 rounded border border-gray-700 text-left overflow-x-auto">PeerJS 接続準備中...</p>
+            <video id="host-video" autoplay playsinline muted class="w-full rounded-lg border border-gray-700 bg-black mt-4 hidden"></video>
+        </div>
+
+        <div id="viewer-ui" class="hidden space-y-4">
+            <p class="text-sm text-gray-400">PCの画面・音声を受信中...</p>
+            <p id="viewer-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-2 rounded border border-gray-700 text-left">配信者に接続を要求中...</p>
+            <div class="relative w-full aspect-video bg-black rounded-lg overflow-hidden border border-gray-700 shadow-inner">
+                <video id="viewer-video" autoplay playsinline controls class="w-full h-full object-contain"></video>
+            </div>
+            <p class="text-xs text-gray-500">※音が聞こえない場合は、上の動画プレイヤーの消音（ミュート）を解除するか、画面をタップしてください。</p>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetRoomId = urlParams.get('room');
+
+        const hostUi = document.getElementById('host-ui');
+        const viewerUi = document.getElementById('viewer-ui');
+        const hostStatus = document.getElementById('host-status');
+        const viewerStatus = document.getElementById('viewer-status');
+        const startShareBtn = document.getElementById('start-share-btn');
+        const hostVideo = document.getElementById('host-video');
+        const viewerVideo = document.getElementById('viewer-video');
+
+        let peer = null;
+        let localStream = null;
+        let connectedViewers = [];
+
+        if (!targetRoomId) {
+            // ==========================================
+            // 【配信モード (PC側)】
+            // ==========================================
+            hostUi.classList.remove('hidden');
+            
+            peer = new Peer();
+
+            peer.on('open', (id) => {
+                hostStatus.innerText = `[ステータス] サーバー接続完了。\nあなたのID: ${id}`;
+                hostStatus.classList.replace('text-yellow-500', 'text-green-400');
+
+                const shareUrl = `${window.location.origin}${window.location.pathname}?room=${id}`;
+                
+                document.getElementById('qrcode').innerHTML = ""; 
+                new QRCode(document.getElementById('qrcode'), {
+                    text: shareUrl,
+                    width: 180,
+                    height: 180
+                });
+            });
+
+            startShareBtn.addEventListener('click', async () => {
+                try {
+                    // ★ audio: true にしてPC内部の音声も取得するように変更
+                    localStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: "always" },
+                        audio: true 
+                    });
+                    
+                    hostVideo.srcObject = localStream;
+                    hostVideo.classList.remove('hidden');
+                    startShareBtn.innerText = "配信中";
+                    startShareBtn.disabled = true;
+                    startShareBtn.classList.add('bg-gray-600', 'cursor-not-allowed');
+
+                    if (connectedViewers.length > 0) {
+                        connectedViewers.forEach(viewerId => {
+                            peer.call(viewerId, localStream);
+                        });
+                        hostStatus.innerText = `${connectedViewers.length}台の端末に画面と音声を送信中！`;
+                    }
+                } catch (err) {
+                    console.error("配信の取得失敗:", err);
+                    alert("画面共有の開始に失敗しました。共有設定時に『システムの音声を共有』にチェックを入れてみてください。");
+                }
+            });
+
+            peer.on('connection', (conn) => {
+                if (localStream) {
+                    peer.call(conn.peer, localStream);
+                    hostStatus.innerText = `新しくスマホが接続されました。映像・音声送信中。`;
+                } else {
+                    if (!connectedViewers.includes(conn.peer)) {
+                        connectedViewers.push(conn.peer);
+                    }
+                    hostStatus.innerText = `スマホが接続して待機中。\n「画面と音声を共有開始」を押してください。`;
+                }
+            });
+
+            peer.on('error', (err) => {
+                hostStatus.innerText = `エラー: ${err.type}`;
+                hostStatus.classList.replace('text-yellow-500', 'text-red-400');
+            });
+
+        } else {
+            // ==========================================
+            // 【視聴モード (スマホ側)】
+            // ==========================================
+            viewerUi.classList.remove('hidden');
+            
+            peer = new Peer();
+
+            peer.on('open', (myId) => {
+                viewerStatus.innerText = `配信者(PC)に接続を要求しています...`;
+                const conn = peer.connect(targetRoomId);
+                
+                conn.on('open', () => {
+                    viewerStatus.innerText = `PCと接続確立。配信を待っています...`;
+                });
+            });
+
+            peer.on('call', (call) => {
+                viewerStatus.innerText = `受信中！`;
+                viewerStatus.classList.replace('text-yellow-500', 'text-green-400');
+                
+                call.answer();
+                
+                call.on('stream', (remoteStream) => {
+                    viewerVideo.srcObject = remoteStream;
+                });
+            });
+
+            peer.on('error', (err) => {
+                viewerStatus.innerText = `エラー。QRを読み直すかPC側を確認してください。`;
+                viewerStatus.classList.replace('text-yellow-500', 'text-red-400');
+            });
+        }
+    </script>
+</body>
+</html>
