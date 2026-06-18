@@ -15,7 +15,7 @@
         <p class="text-xs text-gray-500 mb-6">画面＋PC内音声 配信システム</p>
         
         <div id="host-ui" class="hidden space-y-6">
-            <p class="text-sm text-gray-400">① 先に画面共有を開始し、② スマホでQRコードを読み取ってください。</p>
+            <p class="text-sm text-gray-400">① 先に画面共有を開始し、② スマホでQR読み取り、またはURLをシェアしてください。</p>
             
             <div>
                 <button id="start-share-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2 px-6 rounded-lg transition duration-200 shadow-lg cursor-pointer">
@@ -23,9 +23,16 @@
                 </button>
             </div>
 
-            <div class="flex flex-col items-center justify-center space-y-2">
+            <div class="flex flex-col items-center justify-center space-y-3">
                 <p class="text-xs text-gray-400">② 視聴用QRコード</p>
                 <div id="qrcode" class="bg-white p-4 rounded-lg inline-block shadow-md"></div>
+                
+                <div class="w-full flex items-center space-x-2 mt-2 bg-gray-900 p-2 rounded-lg border border-gray-700">
+                    <input id="share-url-input" type="text" readonly class="bg-transparent text-xs text-gray-400 flex-1 outline-none overflow-x-auto whitespace-nowrap" value="URL生成中...">
+                    <button id="copy-url-btn" class="bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold py-1 px-3 rounded transition duration-200 cursor-pointer whitespace-nowrap">
+                        URLをコピー
+                    </button>
+                </div>
             </div>
 
             <div id="host-status" class="text-xs text-yellow-500 font-mono bg-gray-900 p-3 rounded border border-gray-700 text-left whitespace-pre-wrap">PeerJS 接続準備中...</div>
@@ -60,10 +67,15 @@
         const viewerVideo = document.getElementById('viewer-video');
         const videoContainer = document.getElementById('video-container');
         const tapNotice = document.getElementById('tap-notice');
+        
+        // 🛠 追加した要素の取得
+        const shareUrlInput = document.getElementById('share-url-input');
+        const copyUrlBtn = document.getElementById('copy-url-btn');
 
         let peer = null;
         let localStream = null;
         let connectedViewers = [];
+        let currentShareUrl = ""; // URLを保持する変数
 
         if (!targetRoomId) {
             // ==========================================
@@ -76,18 +88,42 @@
             peer.on('open', (id) => {
                 updateHostStatus(`[接続完了] サーバーに繋がりました。\nあなたの部屋ID: ${id}`, 'text-green-400');
 
-                const shareUrl = `${window.location.origin}${window.location.pathname}?room=${id}`;
+                // 視聴用URLを生成
+                currentShareUrl = `${window.location.origin}${window.location.pathname}?room=${id}`;
+                
+                // 入力欄にURLをセット
+                shareUrlInput.value = currentShareUrl;
+
+                // QRコード生成
                 document.getElementById('qrcode').innerHTML = ""; 
                 new QRCode(document.getElementById('qrcode'), {
-                    text: shareUrl,
+                    text: currentShareUrl,
                     width: 180,
                     height: 180
                 });
             });
 
+            // 🛠 追加：コピーボタンのクリックイベント
+            copyUrlBtn.addEventListener('click', async () => {
+                if (!currentShareUrl) return;
+                try {
+                    await navigator.clipboard.writeText(currentShareUrl);
+                    copyUrlBtn.innerText = "コピーしました！";
+                    copyUrlBtn.classList.replace('bg-indigo-600', 'bg-green-600');
+                    
+                    // 2秒後に元の表示に戻す
+                    setTimeout(() => {
+                        copyUrlBtn.innerText = "URLをコピー";
+                        copyUrlBtn.classList.replace('bg-green-600', 'bg-indigo-600');
+                    }, 2000);
+                } catch (err) {
+                    console.error("URLのコピーに失敗:", err);
+                    alert("コピーに失敗しました。URL枠の文字を手動でコピーしてください。");
+                }
+            });
+
             startShareBtn.addEventListener('click', async () => {
                 try {
-                    // 画面共有と音声の取得を要求
                     localStream = await navigator.mediaDevices.getDisplayMedia({
                         video: { cursor: "always" },
                         audio: true 
@@ -99,10 +135,8 @@
                     startShareBtn.disabled = true;
                     startShareBtn.classList.add('bg-gray-600', 'cursor-not-allowed');
 
-                    // 🚨 【音声チェックロジック】
                     const audioTracks = localStream.getAudioTracks();
                     if (audioTracks.length === 0) {
-                        // 音声が取れていない場合、画面を赤くしてアラートを出す
                         const errMsg = "❌【音声が送信されていません！】\n\n原因の可能性:\n① 画面共有時のポップアップ左下にある「システムの音声を共有」にチェックを入れていない。\n② Macをご利用の場合、「画面全体」を選ぶと構造上音が取れません。「Chromeのタブ」を選んで配信してください。";
                         updateHostStatus(errMsg, 'text-red-400 font-bold bg-red-950/50 border-red-500');
                         alert("⚠️ 音声が共有されていません！\n\n画面共有のポップアップで「音声を共有」にチェックを入れるか、Macの場合は「タブ」を選択してやり直してください。");
@@ -110,7 +144,6 @@
                         updateHostStatus(`✅ 画面 ＋ 音声の取得に成功！\n現在 ${connectedViewers.length} 台の端末に配信中。`, 'text-green-400');
                     }
 
-                    // すでに待機しているスマホがあれば即送信
                     if (connectedViewers.length > 0) {
                         connectedViewers.forEach(viewerId => {
                             peer.call(viewerId, localStream);
@@ -167,17 +200,13 @@
                 
                 call.on('stream', (remoteStream) => {
                     viewerVideo.srcObject = remoteStream;
-                    
-                    // スマホブラウザの「勝手に音を出してはいけないルール」対策
                     viewerVideo.muted = true; 
                     viewerVideo.play().then(() => {
-                        // 再生が始まったら「タップしてね」の案内を出す
                         tapNotice.classList.remove('hidden');
                     });
                 });
             });
 
-            // スマホ画面がタップされたらミュートを解除する
             videoContainer.addEventListener('click', () => {
                 if (viewerVideo.srcObject) {
                     viewerVideo.muted = false;
@@ -187,7 +216,7 @@
             });
 
             peer.on('error', (err) => {
-                viewerStatus.innerText = `エラーが発生しました。QRコードを読み直してください。`;
+                viewerStatus.innerText = `エラーが発生しました。URLまたはQRコードを確認してください。`;
                 viewerStatus.classList.replace('text-yellow-500', 'text-red-400');
             });
         }
